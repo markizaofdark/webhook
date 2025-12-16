@@ -1,0 +1,73 @@
+# render.yaml - оптимизированная версия
+version: "1.0"
+
+services:
+  - type: web
+    name: vk-callback-server
+    env: node
+    region: frankfurt  # Европа, хорошая связь с VK
+    plan: free  # Бесплатный тариф для начала
+    
+    # Build settings
+    rootDir: .
+    buildCommand: |
+      npm ci --only=production
+      npm run build
+    
+    # Runtime settings
+    startCommand: node dist/main.js
+    autoDeploy: true
+    
+    # Health check
+    healthCheckPath: /vk/info
+    healthCheckTimeout: 30
+    
+    # Scaling
+    instanceCount: 1
+    maxInstanceCount: 1  # Для free плана максимум 1 инстанс
+    
+    # Environment variables (должны быть установлены в панели Render)
+    envVars:
+      # Обязательные для VK
+      - key: VK_TOKEN
+        sync: false
+      - key: VK_CONFIRMATION
+        sync: false
+      - key: VK_GROUP_ID
+        sync: false
+      
+      # Обязательные для вашего бэкенда
+      - key: API_URL
+        sync: false
+      - key: API_TOKEN
+        sync: false
+      - key: INBOX_ID
+        sync: false
+      
+      # Опциональные
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: VK_API_VERSION
+        value: "5.199"
+      - key: VK_SECRET
+        sync: false  # Если используете секретный ключ
+      
+      # Для логирования
+      - key: LOG_LEVEL
+        value: info
+      - key: TZ
+        value: Europe/Moscow
+
+# Дисковое пространство (если нужно хранить что-то локально)
+disk:
+  name: data
+  mountPath: /data
+  sizeGB: 1
+
+# CORS настройки (если нужно)
+# headers:
+#   - path: /*
+#     name: Access-Control-Allow-Origin
+#     value: "*"
