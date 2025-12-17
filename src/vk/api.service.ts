@@ -8,86 +8,106 @@ export class ApiService implements OnModuleInit {
   private readonly logger = new Logger(ApiService.name);
   private readonly apiBaseUrl: string;
   private readonly apiToken: string;
-  private readonly inboxId: string;
+  private readonly inboxId: number;
+  private readonly accountId: number = 1; // По умолчанию аккаунт 1
   private contactMap = new Map<number, number>();
 
   constructor(
     private httpService: HttpService,
     private configService: ConfigService,
   ) {
-    // Важно: правильный базовый URL для Chatwoot API
+    // Базовый URL без /app
     this.apiBaseUrl = this.configService.get<string>('API_BASE_URL', 'https://guiai-test.ru');
-    this.apiToken = this.configService.get<string>('API_TOKEN');
-    this.inboxId = this.configService.get<string>('INBOX_ID');
+    this.apiToken = this.configService.get<string>('ACCESS_TOKEN'); // Используем ACCESS_TOKEN!
+    this.inboxId = parseInt(this.configService.get<string>('INBOX_ID', '4'));
     
-    this.logger.log(`API Service initialized. Base URL: ${this.apiBaseUrl}`);
-    this.logger.log(`Using inbox: ${this.inboxId}`);
+    this.logger.log(`API Service initialized`);
+    this.logger.log(`Base URL: ${this.apiBaseUrl}`);
+    this.logger.log(`Inbox ID: ${this.inboxId}`);
+    this.logger.log(`Account ID: ${this.accountId}`);
+    
+    // Проверяем конфигурацию
+    this.validateConfig();
   }
 
   onModuleInit() {
-    this.logger.log('API Service started. Testing connection...');
+    this.logger.log('API Service started');
+  }
+
+  private validateConfig() {
+    if (!this.apiToken) {
+      this.logger.error('ACCESS_TOKEN is not configured!');
+    }
+    if (!this.inboxId) {
+      this.logger.error('INBOX_ID is not configured!');
+    }
   }
 
   private getHeaders() {
-  return {
-    'Authorization': `Bearer ${this.configService.get('ACCESS_TOKEN')}`,
-    'Content-Type': 'application/json',
-  };
-}
+    // Chatwoot API использует Bearer token авторизацию
+    return {
+      'Authorization': `Bearer ${this.apiToken}`,
+      'Content-Type': 'application/json',
+    };
+  }
 
   private getApiUrl(endpoint: string): string {
-    // Формируем URL в формате Chatwoot API
-    return `${this.apiBaseUrl}/api/v1/accounts/1${endpoint}`;
+    return `${this.apiBaseUrl}/api/v1/accounts/${this.accountId}${endpoint}`;
   }
 
   async getOrCreateContact(vkUserId: number, userInfo: any): Promise<number | null> {
     const cacheKey = vkUserId;
     
+    // Проверяем кэш
     if (this.contactMap.has(cacheKey)) {
       return this.contactMap.get(cacheKey);
     }
 
     try {
-      // 1. Попробуем найти существующий контакт
+      // 1. Ищем контакт по identifier (vk_<user_id>)
       const searchUrl = this.getApiUrl('/contacts/search');
-      this.logger.debug(`Searching contact for VK user ${vkUserId}...`);
+      const identifier = `vk_${vkUserId}`;
+      
+      this.logger.debug(`Searching contact with identifier: ${identifier}`);
       
       const searchResponse = await firstValueFrom(
         this.httpService.get(searchUrl, {
           params: { 
-            q: `vk_${vkUserId}`,
-            sort: 'created_at'
+            q: identifier
           },
           headers: this.getHeaders(),
         }),
       );
 
-      if (searchResponse.data?.payload && searchResponse.data.payload.length > 0) {
+      // Chatwoot возвращает данные в формате { payload: [...] }
+      if (searchResponse.data && searchResponse.data.payload && searchResponse.data.payload.length > 0) {
         const contact = searchResponse.data.payload[0];
         const contactId = contact.id;
         this.contactMap.set(cacheKey, contactId);
-        this.logger.log(`Found existing contact ${contactId} for VK user ${vkUserId}`);
+        this.logger.log(`Found existing contact: ${contactId} for VK user ${vkUserId}`);
         return contactId;
       }
 
       // 2. Создаем новый контакт
-      this.logger.log(`Creating new contact for VK user ${vkUserId}...`);
+      this.logger.log(`Creating new contact for VK user ${vkUserId}`);
+      
       const createUrl = this.getApiUrl('/contacts');
       
       const contactData = {
-        inbox_id: parseInt(this.inboxId),
+        inbox_id: this.inboxId,
         name: `${userInfo.first_name} ${userInfo.last_name}`.trim(),
-        email: `vk_${vkUserId}@vk.com`, // Требуется email для Chatwoot
+        email: `vk_${vkUserId}@vk.com`, // Обязательное поле для Chatwoot
         phone_number: null,
-        identifier: `vk_${vkUserId}`,
+        identifier: identifier,
         custom_attributes: {
           vk_id: vkUserId.toString(),
           vk_profile: `https://vk.com/id${vkUserId}`,
-          source: 'vk_messenger'
+          source: 'vk_messenger',
+          created_at: new Date().toISOString()
         }
       };
 
-      this.logger.debug(`Contact data: ${JSON.stringify(contactData)}`);
+      this.logger.debug(`Contact data:`, contactData);
 
       const createResponse = await firstValueFrom(
         this.httpService.post(
@@ -95,28 +115,29 @@ export class ApiService implements OnModuleInit {
           contactData,
           { 
             headers: this.getHeaders(),
-            timeout: 10000 // 10 секунд таймаут
           }
         ),
       );
 
-      if (!createResponse.data || !createResponse.data.id) {
-        throw new Error('Invalid response from Chatwoot API');
+      // Chatwoot возвращает созданный контакт в поле contact
+      const contactId = createResponse.data?.contact?.id || createResponse.data?.id;
+      
+      if (!contactId) {
+        throw new Error('No contact ID in response');
       }
 
-      const contactId = createResponse.data.id;
       this.contactMap.set(cacheKey, contactId);
-      this.logger.log(`Created new contact ${contactId} for VK user ${vkUserId}`);
+      this.logger.log(`Created new contact: ${contactId} for VK user ${vkUserId}`);
       return contactId;
 
     } catch (error) {
       this.logger.error(`Error in getOrCreateContact for user ${vkUserId}:`, {
         status: error.response?.status,
         data: error.response?.data,
-        message: error.message
+        message: error.message,
+        url: error.config?.url
       });
       
-      // Возвращаем null вместо fallback ID
       return null;
     }
   }
@@ -128,9 +149,10 @@ export class ApiService implements OnModuleInit {
         return null;
       }
 
-      // 1. Попробуем найти существующую беседу
+      // 1. Ищем существующую открытую беседу
       const searchUrl = this.getApiUrl('/conversations');
-      this.logger.debug(`Searching conversation for contact ${contactId}...`);
+      
+      this.logger.debug(`Searching conversation for contact ${contactId} in inbox ${this.inboxId}`);
       
       const searchResponse = await firstValueFrom(
         this.httpService.get(searchUrl, {
@@ -143,28 +165,36 @@ export class ApiService implements OnModuleInit {
         }),
       );
 
-      if (searchResponse.data?.payload && searchResponse.data.payload.length > 0) {
-        const conversation = searchResponse.data.payload[0];
-        this.logger.log(`Found existing conversation ${conversation.id} for contact ${contactId}`);
-        return conversation.id;
+      if (searchResponse.data && searchResponse.data.payload && searchResponse.data.payload.length > 0) {
+        // Находим первую открытую беседу
+        const openConversation = searchResponse.data.payload.find(
+          (conv: any) => conv.status === 'open'
+        );
+        
+        if (openConversation) {
+          this.logger.log(`Found existing open conversation: ${openConversation.id} for contact ${contactId}`);
+          return openConversation.id;
+        }
       }
 
       // 2. Создаем новую беседу
-      this.logger.log(`Creating new conversation for contact ${contactId}...`);
+      this.logger.log(`Creating new conversation for contact ${contactId}`);
+      
       const createUrl = this.getApiUrl('/conversations');
       
       const conversationData = {
-        source_id: `vk_${vkUserId}_${Date.now()}`, // Уникальный source_id
-        inbox_id: parseInt(this.inboxId),
+        source_id: `vk_${vkUserId}_${Date.now()}`,
+        inbox_id: this.inboxId,
         contact_id: contactId,
         status: 'open',
         additional_attributes: {
           vk_user_id: vkUserId,
-          timestamp: new Date().toISOString()
+          vk_timestamp: new Date().toISOString(),
+          platform: 'vk'
         }
       };
 
-      this.logger.debug(`Conversation data: ${JSON.stringify(conversationData)}`);
+      this.logger.debug(`Conversation data:`, conversationData);
 
       const createResponse = await firstValueFrom(
         this.httpService.post(
@@ -172,25 +202,27 @@ export class ApiService implements OnModuleInit {
           conversationData,
           { 
             headers: this.getHeaders(),
-            timeout: 10000
           }
         ),
       );
 
-      if (!createResponse.data || !createResponse.data.id) {
-        throw new Error('Invalid response from Chatwoot API');
+      const conversationId = createResponse.data?.id;
+      
+      if (!conversationId) {
+        throw new Error('No conversation ID in response');
       }
 
-      const conversationId = createResponse.data.id;
-      this.logger.log(`Created new conversation ${conversationId} for contact ${contactId}`);
+      this.logger.log(`Created new conversation: ${conversationId} for contact ${contactId}`);
       return conversationId;
 
     } catch (error) {
       this.logger.error(`Error in getOrCreateConversation for contact ${contactId}:`, {
         status: error.response?.status,
         data: error.response?.data,
-        message: error.message
+        message: error.message,
+        url: error.config?.url
       });
+      
       return null;
     }
   }
@@ -203,28 +235,59 @@ export class ApiService implements OnModuleInit {
       }
 
       const url = this.getApiUrl(`/conversations/${conversationId}/messages`);
-      this.logger.debug(`Sending message to conversation ${conversationId}...`);
       
-      await firstValueFrom(
+      this.logger.debug(`Sending message to conversation ${conversationId}`);
+      
+      const messageData = {
+        content: content.trim(),
+        message_type: 'incoming',
+        private: false
+      };
+
+      const response = await firstValueFrom(
         this.httpService.post(
           url,
-          {
-            content: content.trim(),
-            message_type: 'incoming',
-            private: false,
-          },
+          messageData,
           { 
             headers: this.getHeaders(),
-            timeout: 10000
           }
         ),
       );
 
-      this.logger.log(`Successfully sent message to conversation ${conversationId}`);
-      return true;
+      if (response.data && response.data.id) {
+        this.logger.log(`Successfully sent message to conversation ${conversationId}`);
+        return true;
+      } else {
+        this.logger.warn(`Unexpected response format from Chatwoot`);
+        return false;
+      }
 
     } catch (error) {
       this.logger.error(`Error sending message to conversation ${conversationId}:`, {
+        status: error.response?.status,
+        data: error.response?.data,
+        message: error.message,
+        url: error.config?.url
+      });
+      
+      return false;
+    }
+  }
+
+  // Метод для тестирования подключения к Chatwoot
+  async testConnection(): Promise<boolean> {
+    try {
+      const testUrl = this.getApiUrl('/contacts');
+      const response = await firstValueFrom(
+        this.httpService.get(testUrl, {
+          headers: this.getHeaders(),
+        }),
+      );
+      
+      this.logger.log('Chatwoot API connection test: SUCCESS');
+      return true;
+    } catch (error) {
+      this.logger.error('Chatwoot API connection test: FAILED', {
         status: error.response?.status,
         data: error.response?.data,
         message: error.message

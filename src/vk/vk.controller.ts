@@ -170,4 +170,31 @@ export class VkController {
       };
     }
   }
+
+  @Get('test-chatwoot')
+async testChatwootConnection(): Promise<any> {
+  try {
+    const testResult = await this.apiService.testConnection();
+    
+    if (testResult) {
+      return {
+        status: 'success',
+        message: 'Chatwoot API connection is working',
+        timestamp: new Date().toISOString(),
+      };
+    } else {
+      return {
+        status: 'error',
+        message: 'Failed to connect to Chatwoot API',
+        timestamp: new Date().toISOString(),
+      };
+    }
+  } catch (error) {
+    return {
+      status: 'error',
+      message: error.message,
+      timestamp: new Date().toISOString(),
+    };
+  }
+}
 }
