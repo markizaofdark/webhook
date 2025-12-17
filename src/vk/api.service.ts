@@ -29,11 +29,11 @@ export class ApiService implements OnModuleInit {
   }
 
   private getHeaders() {
-    return {
-      'api_access_token': this.apiToken,
-      'Content-Type': 'application/json',
-    };
-  }
+  return {
+    'Authorization': `Bearer ${this.configService.get('ACCESS_TOKEN')}`,
+    'Content-Type': 'application/json',
+  };
+}
 
   private getApiUrl(endpoint: string): string {
     // Формируем URL в формате Chatwoot API
