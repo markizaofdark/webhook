@@ -10,7 +10,7 @@ export default () => ({
   },
   
   chatwoot: {
-    apiBaseUrl: process.env.API_BASE_URL || 'https://guiai-test.ru',
+    apiBaseUrl: process.env.API_BASE_URL || 'https://guiai-test.ru/api/v1/accounts/1',
     apiToken: process.env.API_TOKEN,
     accessToken: process.env.ACCESS_TOKEN,
     inboxId: parseInt(process.env.INBOX_ID, 10),
