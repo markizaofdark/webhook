@@ -3,10 +3,11 @@
   "version": "1.0.0",
   "description": "VK Bot для обработки сообщений группы",
   "scripts": {
+    "build": "nest build",
     "start": "npm run start:prod",
-    "start:dev": "npm run start --watch",
-    "start:debug": "npm run start --debug --watch",
-    "start:prod": "npm run start:prod",
+    "start:dev": "nest start --watch",
+    "start:debug": "nest start --debug --watch",
+    "start:prod": "node dist/main",
     "lt": "lt --port 3000 --subdomain http://localhost:3000",
     "dev": "concurrently \"npm run start:dev\" \"npm run lt\""
   },
