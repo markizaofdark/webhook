@@ -6,6 +6,7 @@ import { VkModule } from './vk/vk.module';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+      envFilePath: '.env',
     }),
     VkModule,
   ],
