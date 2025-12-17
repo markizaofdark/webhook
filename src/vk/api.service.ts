@@ -1,91 +1,49 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 
-interface ChatwootContact {
-  id: number;
-  name: string;
-  email: string;
-  identifier: string;
-  custom_attributes: Record<string, any>;
-}
-
-interface ChatwootConversation {
-  id: number;
-  inbox_id: number;
-  contact_id: number;
-  status: string;
-}
-
 @Injectable()
-export class ApiService implements OnModuleInit {
+export class ApiService {
   private readonly logger = new Logger(ApiService.name);
   private readonly apiBaseUrl: string;
   private readonly apiToken: string;
+  private readonly accountId: string;
   private readonly inboxId: string;
-  private readonly accountId: string = '1';
   private contactMap = new Map<number, number>();
 
   constructor(
-    private httpService: HttpService,
-    private configService: ConfigService,
+    private readonly httpService: HttpService,
+    private readonly configService: ConfigService,
   ) {
-    // Используем базовый URL без /app
-    this.apiBaseUrl = 'https://guiai-test.ru';
+    this.apiBaseUrl = this.configService.get<string>('API_BASE_URL');
     this.apiToken = this.configService.get<string>('API_TOKEN');
+    this.accountId = this.configService.get<string>('ACCOUNT_ID', '1');
     this.inboxId = this.configService.get<string>('INBOX_ID', '4');
     
-    this.logger.log('Chatwoot Admin API Service initialized');
-    this.logger.log(`Base URL: ${this.apiBaseUrl}`);
-    this.logger.log(`Account ID: ${this.accountId}`);
-    this.logger.log(`Inbox ID: ${this.inboxId}`);
+    this.logger.log(`Chatwoot Application API initialized for account ${this.accountId}, inbox ${this.inboxId}`);
+    this.validateConfig();
   }
 
-  onModuleInit() {
-    this.testConnection();
-  }
-
-  private getHeaders() {
-    // Chatwoot Admin API использует api_access_token
-    return {
-      'api_access_token': this.apiToken,
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-    };
-  }
-
-  private buildApiUrl(endpoint: string): string {
-    // Стандартные endpoint'ы Chatwoot API
-    return `${this.apiBaseUrl}/api/v1/accounts/${this.accountId}${endpoint}`;
-  }
-
-  async testConnection(): Promise<void> {
-    try {
-      const testUrl = this.buildApiUrl('/inboxes');
-      this.logger.log(`Testing connection to Chatwoot API: ${testUrl}`);
-      
-      const response = await firstValueFrom(
-        this.httpService.get(testUrl, {
-          headers: this.getHeaders(),
-          timeout: 5000,
-        }),
-      );
-
-      if (response.status === 200) {
-        this.logger.log('Chatwoot API connection: SUCCESS');
-        this.logger.log(`Available inboxes: ${response.data?.payload?.length || 0}`);
-      }
-    } catch (error) {
-      this.logger.error('Chatwoot API connection: FAILED', {
-        status: error.response?.status,
-        data: error.response?.data,
-        message: error.message,
-        url: error.config?.url,
-      });
+  private validateConfig() {
+    if (!this.apiToken) {
+      this.logger.warn('API_TOKEN is not configured!');
     }
   }
 
+  /**
+   * Формирует URL для Chatwoot API с добавлением токена в query-параметр
+   * Это обходит проблему Nginx с заголовками с подчёркиванием
+   */
+  private buildApiUrl(endpoint: string): string {
+    const baseUrl = `${this.apiBaseUrl}/api/v1/accounts/${this.accountId}${endpoint}`;
+    // Добавляем токен как query-параметр для обхода проблем с заголовками
+    return `${baseUrl}?api_access_token=${encodeURIComponent(this.apiToken)}`;
+  }
+
+  /**
+   * Получает или создаёт контакт в Chatwoot
+   */
   async getOrCreateContact(vkUserId: number, userInfo: any): Promise<number | null> {
     const cacheKey = vkUserId;
     
@@ -97,25 +55,31 @@ export class ApiService implements OnModuleInit {
     try {
       const identifier = `vk_${vkUserId}`;
       
-      // 1. Ищем контакт по identifier
+      // 1. Ищем существующий контакт
       const searchUrl = this.buildApiUrl('/contacts/search');
+      const searchParams = new URLSearchParams({
+        q: identifier
+      }).toString();
+      
+      const fullSearchUrl = `${searchUrl}&${searchParams}`;
+      
       this.logger.debug(`Searching contact: ${identifier}`);
       
       const searchResponse = await firstValueFrom(
-        this.httpService.get(searchUrl, {
-          params: { q: identifier },
-          headers: this.getHeaders(),
-        }),
+        this.httpService.get(fullSearchUrl, {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 5000,
+        })
       );
 
       if (searchResponse.data?.payload?.length > 0) {
-        const contact = searchResponse.data.payload[0] as ChatwootContact;
-        this.contactMap.set(cacheKey, contact.id);
-        this.logger.log(`Found contact: ${contact.id} for VK user ${vkUserId}`);
-        return contact.id;
+        const contactId = searchResponse.data.payload[0].id;
+        this.contactMap.set(cacheKey, contactId);
+        this.logger.log(`Found contact: ${contactId} for VK user ${vkUserId}`);
+        return contactId;
       }
 
-      // 2. Создаем новый контакт
+      // 2. Создаём новый контакт
       this.logger.log(`Creating contact for VK user ${vkUserId}`);
       
       const createUrl = this.buildApiUrl('/contacts');
@@ -129,18 +93,19 @@ export class ApiService implements OnModuleInit {
           vk_id: vkUserId.toString(),
           vk_profile: `https://vk.com/id${vkUserId}`,
           source: 'vk_messenger',
-          created_at: new Date().toISOString(),
-        },
+          created_at: new Date().toISOString()
+        }
       };
-
-      this.logger.debug('Contact data:', contactData);
 
       const createResponse = await firstValueFrom(
         this.httpService.post(
           createUrl,
           contactData,
-          { headers: this.getHeaders() }
-        ),
+          { 
+            headers: { 'Content-Type': 'application/json' },
+            timeout: 5000
+          }
+        )
       );
 
       const contactId = createResponse.data?.id;
@@ -157,41 +122,52 @@ export class ApiService implements OnModuleInit {
       this.logger.error(`Failed to get/create contact for ${vkUserId}:`, {
         status: error.response?.status,
         data: error.response?.data,
-        message: error.message,
-        url: error.config?.url,
+        message: error.message
       });
       
-      // Fallback ID для продолжения работы
-      const fallbackId = Date.now();
+      // Fallback: генерируем временный ID для продолжения работы
+      const fallbackId = Math.floor(Math.random() * 1000000);
       this.contactMap.set(cacheKey, fallbackId);
       return fallbackId;
     }
   }
 
+  /**
+   * Получает или создаёт беседу в Chatwoot
+   */
   async getOrCreateConversation(vkUserId: number, contactId: number): Promise<number | null> {
     try {
       // 1. Ищем существующую беседу
       const searchUrl = this.buildApiUrl('/conversations');
+      const searchParams = new URLSearchParams({
+        inbox_id: this.inboxId,
+        contact_id: contactId.toString(),
+        status: 'open'
+      }).toString();
+      
+      const fullSearchUrl = `${searchUrl}&${searchParams}`;
+      
       this.logger.debug(`Searching conversation for contact ${contactId}`);
       
       const searchResponse = await firstValueFrom(
-        this.httpService.get(searchUrl, {
-          params: {
-            inbox_id: this.inboxId,
-            contact_id: contactId,
-            status: 'open',
-          },
-          headers: this.getHeaders(),
-        }),
+        this.httpService.get(fullSearchUrl, {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 5000,
+        })
       );
 
       if (searchResponse.data?.payload?.length > 0) {
-        const conversation = searchResponse.data.payload[0] as ChatwootConversation;
-        this.logger.log(`Found conversation: ${conversation.id} for contact ${contactId}`);
-        return conversation.id;
+        const conversation = searchResponse.data.payload.find(
+          (conv: any) => conv.contact_id === contactId && conv.status === 'open'
+        );
+        
+        if (conversation) {
+          this.logger.log(`Found conversation: ${conversation.id} for contact ${contactId}`);
+          return conversation.id;
+        }
       }
 
-      // 2. Создаем новую беседу
+      // 2. Создаём новую беседу
       this.logger.log(`Creating conversation for contact ${contactId}`);
       
       const createUrl = this.buildApiUrl('/conversations');
@@ -203,17 +179,19 @@ export class ApiService implements OnModuleInit {
         additional_attributes: {
           vk_user_id: vkUserId,
           source: 'vk_messenger',
-        },
+          timestamp: new Date().toISOString()
+        }
       };
-
-      this.logger.debug('Conversation data:', conversationData);
 
       const createResponse = await firstValueFrom(
         this.httpService.post(
           createUrl,
           conversationData,
-          { headers: this.getHeaders() }
-        ),
+          { 
+            headers: { 'Content-Type': 'application/json' },
+            timeout: 5000
+          }
+        )
       );
 
       const conversationId = createResponse.data?.id;
@@ -229,15 +207,16 @@ export class ApiService implements OnModuleInit {
       this.logger.error(`Failed to get/create conversation:`, {
         status: error.response?.status,
         data: error.response?.data,
-        message: error.message,
-        url: error.config?.url,
+        message: error.message
       });
       
-      // Fallback ID
-      return Date.now();
+      return null;
     }
   }
 
+  /**
+   * Отправляет сообщение в беседу Chatwoot
+   */
   async sendMessage(conversationId: number, content: string): Promise<boolean> {
     try {
       if (!content || content.trim().length === 0) {
@@ -246,20 +225,24 @@ export class ApiService implements OnModuleInit {
       }
 
       const url = this.buildApiUrl(`/conversations/${conversationId}/messages`);
-      this.logger.debug(`Sending message to conversation ${conversationId}`);
       
       const messageData = {
         content: content.trim(),
         message_type: 'incoming',
-        private: false,
+        private: false
       };
 
+      this.logger.debug(`Sending message to conversation ${conversationId}`);
+      
       await firstValueFrom(
         this.httpService.post(
           url,
           messageData,
-          { headers: this.getHeaders() }
-        ),
+          { 
+            headers: { 'Content-Type': 'application/json' },
+            timeout: 5000
+          }
+        )
       );
 
       this.logger.log(`Message sent to conversation ${conversationId}`);
@@ -269,9 +252,72 @@ export class ApiService implements OnModuleInit {
       this.logger.error(`Failed to send message:`, {
         status: error.response?.status,
         data: error.response?.data,
-        message: error.message,
-        url: error.config?.url,
+        message: error.message
       });
+      return false;
+    }
+  }
+
+  /**
+   * Тестирует подключение к Chatwoot API
+   */
+  async testConnection(): Promise<boolean> {
+    try {
+      const testUrl = this.buildApiUrl('/inboxes');
+      
+      this.logger.log(`Testing Chatwoot API connection: ${testUrl.split('?')[0]}`);
+      
+      const response = await firstValueFrom(
+        this.httpService.get(testUrl, {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 5000,
+        })
+      );
+
+      if (response.status === 200) {
+        this.logger.log('Chatwoot API connection: SUCCESS');
+        this.logger.log(`Available inboxes: ${response.data?.payload?.length || 0}`);
+        return true;
+      }
+      
+      return false;
+    } catch (error) {
+      this.logger.error('Chatwoot API connection: FAILED', {
+        status: error.response?.status,
+        data: error.response?.data,
+        message: error.message
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Комплексный метод: обрабатывает сообщение от VK
+   */
+  async processVkMessage(vkUserId: number, userInfo: any, messageText: string): Promise<boolean> {
+    try {
+      // 1. Получаем/создаём контакт
+      const contactId = await this.getOrCreateContact(vkUserId, userInfo);
+      
+      if (!contactId) {
+        this.logger.error(`Failed to get/create contact for ${vkUserId}`);
+        return false;
+      }
+      
+      // 2. Получаем/создаём беседу
+      const conversationId = await this.getOrCreateConversation(vkUserId, contactId);
+      
+      if (!conversationId) {
+        this.logger.error(`Failed to get/create conversation for contact ${contactId}`);
+        return false;
+      }
+      
+      // 3. Отправляем сообщение
+      const success = await this.sendMessage(conversationId, messageText);
+      
+      return success;
+    } catch (error) {
+      this.logger.error(`Failed to process VK message:`, error.message);
       return false;
     }
   }

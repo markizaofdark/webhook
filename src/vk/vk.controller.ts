@@ -18,6 +18,9 @@ export class VkController {
     this.vkGroupId = parseInt(this.configService.get<string>('VK_GROUP_ID', '0'));
   }
 
+  /**
+   * Эндпоинт для Callback API VK
+   */
   @Post('callback')
   @HttpCode(200)
   async handleCallback(
@@ -28,15 +31,15 @@ export class VkController {
 
     const eventType = body.type || query.type;
 
-    // Confirmation
+    // Confirmation для VK
     if (eventType === 'confirmation') {
-      this.logger.log(`Returning confirmation: ${this.vkConfirmation}`);
+      this.logger.log(`Returning confirmation code: ${this.vkConfirmation}`);
       return this.vkConfirmation;
     }
 
     // Проверка group_id
     if (body.group_id && parseInt(body.group_id) !== this.vkGroupId) {
-      this.logger.warn(`Wrong group_id: ${body.group_id}`);
+      this.logger.warn(`Invalid group_id: ${body.group_id}, expected: ${this.vkGroupId}`);
       return 'ok';
     }
 
@@ -55,118 +58,133 @@ export class VkController {
           this.logger.log(`Unhandled event: ${eventType}`);
       }
     } catch (error) {
-      this.logger.error(`Error: ${eventType}:`, error.message);
+      this.logger.error(`Error processing ${eventType}:`, error.message);
     }
 
     return 'ok';
   }
 
+  /**
+   * Обработка нового сообщения из VK
+   */
   private async handleMessageNew(messageData: any): Promise<void> {
     try {
       const message = messageData.message;
       const vkUserId = message.from_id;
       const messageText = message.text || '';
       
-      this.logger.log(`Message from ${vkUserId}: ${messageText.substring(0, 100)}...`);
+      this.logger.log(`Processing message from ${vkUserId}: ${messageText.substring(0, 100)}...`);
 
-      // Получаем информацию о пользователе
+      // Получаем информацию о пользователе VK
       const userInfo = await this.vkService.getVkUserInfo(vkUserId);
       
-      // Создаем или получаем контакт в Chatwoot
-      const contactId = await this.apiService.getOrCreateContact(vkUserId, userInfo);
+      // Используем комплексный метод ApiService
+      const success = await this.apiService.processVkMessage(vkUserId, userInfo, messageText);
       
-      if (!contactId) {
-        this.logger.error(`No contact ID for ${vkUserId}`);
-        return;
-      }
-      
-      // Создаем или получаем беседу
-      const conversationId = await this.apiService.getOrCreateConversation(vkUserId, contactId);
-      
-      if (!conversationId) {
-        this.logger.error(`No conversation ID for contact ${contactId}`);
-        return;
-      }
-      
-      // Отправляем сообщение
-      const sent = await this.apiService.sendMessage(conversationId, messageText);
-      
-      if (sent) {
-        this.logger.log(`Message from ${vkUserId} sent to Chatwoot`);
+      if (success) {
+        this.logger.log(`Message from ${vkUserId} successfully sent to Chatwoot`);
       } else {
-        this.logger.error(`Failed to send message from ${vkUserId}`);
+        this.logger.error(`Failed to process message from ${vkUserId}`);
       }
       
     } catch (error) {
-      this.logger.error('Error processing message:', error.message, error.stack);
+      this.logger.error('Error in handleMessageNew:', error.message, error.stack);
     }
   }
 
-  @Get('test')
-  async testApi(): Promise<any> {
+  /**
+   * Тестовый эндпоинт для ручной проверки
+   */
+  @Post('test')
+  async testIntegration(@Body() testData: any): Promise<any> {
     try {
-      // Тестовый запрос к Chatwoot API
-      const testUrl = 'https://guiai-test.ru/api/v1/accounts/1/inboxes';
-      const response = await this.apiService['httpService'].get(testUrl, {
-        headers: {
-          'api_access_token': this.configService.get('API_TOKEN'),
-          'Content-Type': 'application/json',
-        },
-      }).toPromise();
-
-      return {
-        status: 'success',
-        data: response.data,
-      };
-    } catch (error) {
-      return {
-        status: 'error',
-        message: error.message,
-        response: error.response?.data,
-      };
-    }
-  }
-
-  @Post('send-test')
-  async sendTestMessage(@Body() body: any): Promise<any> {
-    try {
-      const vkUserId = body.user_id || 506175275;
-      const messageText = body.message || 'Test message';
+      const vkUserId = testData.user_id || 506175275;
+      const messageText = testData.message || 'Test message from VK integration';
       
-      this.logger.log(`Sending test message for user ${vkUserId}`);
+      this.logger.log(`Manual test for user ${vkUserId}: ${messageText}`);
       
-      // Имитируем VK callback
-      await this.handleMessageNew({
-        message: {
-          from_id: vkUserId,
-          text: messageText,
-        },
-      });
+      const userInfo = await this.vkService.getVkUserInfo(vkUserId);
+      const success = await this.apiService.processVkMessage(vkUserId, userInfo, messageText);
       
       return {
-        status: 'success',
-        message: 'Test message processed',
+        status: success ? 'success' : 'error',
+        message: success ? 'Test message processed through Chatwoot API' : 'Failed to process test message',
         user_id: vkUserId,
+        api_type: 'application',
+        timestamp: new Date().toISOString(),
       };
     } catch (error) {
       return {
         status: 'error',
         message: error.message,
+        timestamp: new Date().toISOString(),
       };
     }
   }
 
+  /**
+   * Тестирование Chatwoot API соединения
+   */
+  @Post('test-chatwoot')
+  async testChatwootConnection(): Promise<any> {
+    try {
+      const connected = await this.apiService.testConnection();
+      
+      return {
+        status: connected ? 'success' : 'error',
+        message: connected ? 'Chatwoot API connection is working' : 'Failed to connect to Chatwoot API',
+        timestamp: new Date().toISOString(),
+      };
+    } catch (error) {
+      return {
+        status: 'error',
+        message: error.message,
+        timestamp: new Date().toISOString(),
+      };
+    }
+  }
+
+  /**
+   * Статус сервера
+   */
   @Get('status')
   async getStatus(): Promise<any> {
+    const chatwootTest = await this.apiService.testConnection();
+    
     return {
       status: 'online',
       timestamp: new Date().toISOString(),
-      vk_group_id: this.vkGroupId,
-      webhook_url: `${this.configService.get('WEBHOOK_URL', '')}/vk/callback`,
-      endpoints: {
-        test: `${this.configService.get('WEBHOOK_URL', '')}/vk/test`,
-        send_test: `${this.configService.get('WEBHOOK_URL', '')}/vk/send-test`,
+      vk: {
+        group_id: this.vkGroupId,
+        confirmation_code_set: !!this.vkConfirmation,
       },
+      chatwoot: {
+        connected: chatwootTest,
+        base_url: this.configService.get('API_BASE_URL'),
+        account_id: this.configService.get('ACCOUNT_ID'),
+        inbox_id: this.configService.get('INBOX_ID'),
+        api_type: 'application',
+        auth_method: 'query_parameter',
+      },
+      server: {
+        webhook_url: `${this.configService.get('WEBHOOK_URL', '')}/vk/callback`,
+        environment: this.configService.get('NODE_ENV'),
+      },
+      endpoints: {
+        vk_callback: `${this.configService.get('WEBHOOK_URL', '')}/vk/callback`,
+        test: `${this.configService.get('WEBHOOK_URL', '')}/vk/test`,
+        test_chatwoot: `${this.configService.get('WEBHOOK_URL', '')}/vk/test-chatwoot`,
+        status: `${this.configService.get('WEBHOOK_URL', '')}/vk/status`,
+      }
+    };
+  }
+
+  @Get('health')
+  healthCheck(): any {
+    return {
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      service: 'vk-chatwoot-integration',
     };
   }
 }

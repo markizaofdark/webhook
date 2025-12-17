@@ -17,13 +17,16 @@ export class VkService {
     this.apiVersion = this.configService.get<string>('VK_API_VERSION', '5.199');
   }
 
+  /**
+   * Получает информацию о пользователе VK
+   */
   async getVkUserInfo(userId: number): Promise<any> {
     try {
       const response = await firstValueFrom(
         this.httpService.post('https://api.vk.com/method/users.get', null, {
           params: {
             user_ids: userId,
-            fields: 'first_name,last_name',
+            fields: 'first_name,last_name,photo_100',
             v: this.apiVersion,
             access_token: this.vkToken,
           },
@@ -34,8 +37,9 @@ export class VkService {
       );
 
       if (response.data.error) {
-        this.logger.error(`VK API error: ${response.data.error.error_msg}`);
+        this.logger.error(`VK API Error: ${response.data.error.error_msg}`);
         return {
+          id: userId,
           first_name: 'VK',
           last_name: 'User',
         };
@@ -43,8 +47,9 @@ export class VkService {
 
       return response.data.response[0];
     } catch (error) {
-      this.logger.error(`Failed to get VK user info:`, error.message);
+      this.logger.error(`Error getting VK user info for ${userId}:`, error.message);
       return {
+        id: userId,
         first_name: 'VK',
         last_name: 'User',
       };
