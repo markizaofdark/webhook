@@ -30,7 +30,7 @@
     "vk-io": "^4.10.1"
   },
   "devDependencies": {
-    "@nestjs/cli": "^10.0.0",
+    "@nestjs/cli": "^11.0.14",
     "@nestjs/schematics": "^10.0.0",
     "@types/express": "^4.17.17",
     "@types/node": "^20.0.0",
