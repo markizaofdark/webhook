@@ -9,7 +9,7 @@
     "start:prod": "node dist/main",
     "lt": "lt --port 3000 --subdomain ваш-уникальный-домен",
     "dev": "concurrently \"npm run start:dev\" \"npm run lt\"",
-    "build": "npm install; npm run build"
+    "build": "npm run build"
 
   },
   "dependencies": {
