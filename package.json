@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "VK Bot для обработки сообщений группы",
   "scripts": {
-    "build": "nest build",
+    "build": "npx @nestjs/cli build",
     "start": "npm run start:prod",
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
