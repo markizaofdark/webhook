@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Body, Query, Headers, Logger, HttpCode } from '@nestjs/common';
+import { Controller, Post, Get, Body, Query, Logger, HttpCode } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { VkService } from './vk.service';
 import { ApiService } from './api.service';
@@ -8,7 +8,6 @@ export class VkController {
   private readonly logger = new Logger(VkController.name);
   private readonly vkConfirmation: string;
   private readonly vkGroupId: number;
-  private readonly vkSecret: string;
 
   constructor(
     private readonly vkService: VkService,
@@ -16,8 +15,7 @@ export class VkController {
     private readonly configService: ConfigService,
   ) {
     this.vkConfirmation = this.configService.get<string>('VK_CONFIRMATION');
-    this.vkGroupId = parseInt(this.configService.get<string>('VK_GROUP_ID'));
-    this.vkSecret = this.configService.get<string>('VK_SECRET');
+    this.vkGroupId = parseInt(this.configService.get<string>('VK_GROUP_ID', '0'));
   }
 
   @Post('callback')
@@ -26,29 +24,23 @@ export class VkController {
     @Body() body: any,
     @Query() query: any,
   ): Promise<string> {
-    this.logger.debug('Received VK callback:', { body, query });
+    this.logger.debug('Received VK callback');
 
     const eventType = body.type || query.type;
 
-    // 1. Confirmation для Callback API
+    // 1. Confirmation
     if (eventType === 'confirmation') {
       this.logger.log(`Returning confirmation code: ${this.vkConfirmation}`);
       return this.vkConfirmation;
     }
 
-    // 2. Проверка secret (если настроен)
-    if (this.vkSecret && body.secret !== this.vkSecret) {
-      this.logger.warn('Invalid secret key provided');
-      return 'ok'; // Все равно возвращаем ok, чтобы VK не спамил
-    }
-
-    // 3. Проверка group_id
+    // 2. Проверка group_id
     if (body.group_id && parseInt(body.group_id) !== this.vkGroupId) {
       this.logger.warn(`Invalid group_id: ${body.group_id}, expected: ${this.vkGroupId}`);
       return 'ok';
     }
 
-    // 4. Обработка событий
+    // 3. Обработка событий
     try {
       switch (eventType) {
         case 'message_new':
@@ -56,7 +48,7 @@ export class VkController {
           break;
           
         case 'message_reply':
-          this.logger.log('Message reply received:', body.object);
+          this.logger.log('Message reply received');
           break;
           
         case 'message_allow':
@@ -73,6 +65,11 @@ export class VkController {
           
         case 'group_leave':
           this.logger.log(`User ${body.object.user_id} left group`);
+          break;
+          
+        case 'message_typing_state':
+          // Просто логируем, не обрабатываем
+          this.logger.debug('Message typing state event received');
           break;
           
         default:
@@ -99,26 +96,78 @@ export class VkController {
       // Создаем или получаем контакт
       const contactId = await this.apiService.getOrCreateContact(vkUserId, userInfo);
       
+      if (!contactId) {
+        this.logger.error(`Failed to get/create contact for VK user ${vkUserId}`);
+        return;
+      }
+      
       // Создаем или получаем беседу
       const conversationId = await this.apiService.getOrCreateConversation(vkUserId, contactId);
       
-      // Отправляем сообщение в Chatwoot
-      await this.apiService.sendMessage(conversationId, messageText, 'incoming');
+      if (!conversationId) {
+        this.logger.error(`Failed to get/create conversation for contact ${contactId}`);
+        return;
+      }
       
-      this.logger.log(`Successfully processed message from ${vkUserId}`);
+      // Отправляем сообщение в Chatwoot
+      const messageSent = await this.apiService.sendMessage(conversationId, messageText);
+      
+      if (messageSent) {
+        this.logger.log(`Successfully processed message from ${vkUserId}`);
+      } else {
+        this.logger.error(`Failed to send message from ${vkUserId} to Chatwoot`);
+      }
       
     } catch (error) {
       this.logger.error('Error in handleMessageNew:', error.message, error.stack);
     }
   }
 
-  @Get('test')
-  async testEndpoint(): Promise<any> {
+  @Get('health')
+  async healthCheck(): Promise<any> {
     return {
-      status: 'online',
+      status: 'ok',
       timestamp: new Date().toISOString(),
-      webhook_url: `${this.configService.get('WEBHOOK_URL')}/vk/callback`,
       vk_group_id: this.vkGroupId,
+      webhook_url: `${this.configService.get('WEBHOOK_URL', '')}/vk/callback`,
     };
+  }
+
+  @Post('test')
+  async testIntegration(@Body() testData: any): Promise<any> {
+    try {
+      const vkUserId = testData.user_id || 506175275;
+      const messageText = testData.message || 'Test message from VK';
+      
+      this.logger.log(`Test: Processing message from ${vkUserId}`);
+      
+      // Имитация VK callback
+      const mockEvent = {
+        type: 'message_new',
+        object: {
+          message: {
+            id: Date.now(),
+            from_id: vkUserId,
+            peer_id: vkUserId,
+            text: messageText,
+            date: Math.floor(Date.now() / 1000),
+          },
+        },
+        group_id: this.vkGroupId,
+      };
+      
+      await this.handleMessageNew(mockEvent.object);
+      
+      return {
+        status: 'success',
+        message: 'Test completed',
+        user_id: vkUserId,
+      };
+    } catch (error) {
+      return {
+        status: 'error',
+        message: error.message,
+      };
+    }
   }
 }
