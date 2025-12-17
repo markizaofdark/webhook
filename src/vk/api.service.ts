@@ -17,7 +17,7 @@ export class ApiService implements OnModuleInit {
     private configService: ConfigService,
   ) {
     // Базовый URL без /app
-    this.apiBaseUrl = this.configService.get<string>('API_BASE_URL', 'https://guiai-test.ru/api/v1');
+    this.apiBaseUrl = this.configService.get<string>('API_BASE_URL', 'https://guiai-test.ru');
     this.apiToken = this.configService.get<string>('ACCESS_TOKEN'); // Используем ACCESS_TOKEN!
     this.inboxId = parseInt(this.configService.get<string>('INBOX_ID', '4'));
     
